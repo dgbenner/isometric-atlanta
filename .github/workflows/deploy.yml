@@ -32,10 +32,12 @@ jobs:
 
       - name: Write config.js from secret
         working-directory: renderer
+        env:
+          API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
         run: |
-          cat > config.js << 'SCRIPT'
+          cat > config.js << SCRIPT
           export const CONFIG = {
-              GOOGLE_MAPS_API_KEY: '${{ secrets.GOOGLE_MAPS_API_KEY }}',
+              GOOGLE_MAPS_API_KEY: '${API_KEY}',
               CENTER_LAT: 33.7607,
               CENTER_LNG: -84.3931,
               INITIAL_ZOOM: 500,
