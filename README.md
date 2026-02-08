@@ -2,7 +2,6 @@
 
 An AI-generated isometric pixel art map of downtown Atlanta, Georgia — rendered in RollerCoaster Tycoon style using real-world 3D geometry from Google Maps.
 
-Inspired by [Isometric NYC](https://isometric.nyc) by Andy Coenen.
 
 ## Overview
 
