@@ -114,7 +114,7 @@
     </div>
 
     <div id="controls-help">
-        WASD / Arrows: Pan &nbsp;|&nbsp; Scroll: Zoom &nbsp;|&nbsp; Q/E: Rotate 45&deg; &nbsp;|&nbsp; Click: Address &nbsp;|&nbsp; Space: Screenshot
+        WASD / Arrows: Pan &nbsp;|&nbsp; Space+Drag: Pan &nbsp;|&nbsp; Scroll / [ ]: Zoom &nbsp;|&nbsp; Q/E: Rotate 45&deg; &nbsp;|&nbsp; Click: Address &nbsp;|&nbsp; P: Screenshot
     </div>
 
     <div id="compass">
@@ -189,11 +189,11 @@
             // East = (-sin(lng), cos(lng), 0) in ECEF
             const east = new THREE.Vector3(-Math.sin(lng), Math.cos(lng), 0).normalize();
 
-            // North = up × east
-            const north = new THREE.Vector3().crossVectors(up, east).normalize();
+            // South = east × up for right-handed system (X=East, Y=Up, Z=South)
+            const south = new THREE.Vector3().crossVectors(east, up).normalize();
 
-            // Build rotation: columns are east(X), up(Y), north(Z)
-            const rotMatrix = new THREE.Matrix4().makeBasis(east, up, north);
+            // Build rotation: columns are east(X), up(Y), south(Z)
+            const rotMatrix = new THREE.Matrix4().makeBasis(east, up, south);
             const rotInverse = rotMatrix.clone().invert();
 
             // Full transform: translate to origin, then rotate to local frame
@@ -231,7 +231,7 @@
 
         function updateCameraPosition() {
             const phi = Math.atan(2); // elevation: 26.565° from ground
-            const theta = THREE.MathUtils.degToRad(azimuthDeg);
+            const theta = THREE.MathUtils.degToRad(180 - azimuthDeg);
 
             camera.position.setFromSphericalCoords(cameraDistance, phi, theta);
             camera.position.add(panOffset);
@@ -297,6 +297,8 @@
 
         // Apply ECEF → local transform
         const localTransform = buildECEFToLocalMatrix(CONFIG.CENTER_LAT, CONFIG.CENTER_LNG);
+        // Flip X axis so geographic east renders on the right side of screen
+        localTransform.premultiply(new THREE.Matrix4().makeScale(-1, 1, -1));
         tiles.group.matrix.copy(localTransform);
         tiles.group.matrix.decompose(
             tiles.group.position,
@@ -316,8 +318,16 @@
         // ============================================
         const keysDown = new Set();
 
+        let spaceDown = false;
+
         window.addEventListener('keydown', (e) => {
             keysDown.add(e.key.toLowerCase());
+
+            if (e.key === ' ') {
+                e.preventDefault();
+                spaceDown = true;
+                renderer.domElement.style.cursor = 'grab';
+            }
 
             // Rotate azimuth by 45° increments
             if (e.key.toLowerCase() === 'q') {
@@ -330,14 +340,78 @@
             }
 
             // Screenshot
-            if (e.key === ' ') {
-                e.preventDefault();
+            if (e.key.toLowerCase() === 'p') {
                 takeScreenshot();
+            }
+
+            // Zoom with [ and ]
+            if (e.key === '[') {
+                frustumSize = Math.max(50, Math.min(5000, frustumSize * 0.9));
+                updateFrustum();
+                updateCameraPosition();
+            }
+            if (e.key === ']') {
+                frustumSize = Math.max(50, Math.min(5000, frustumSize * 1.1));
+                updateFrustum();
+                updateCameraPosition();
             }
         });
 
         window.addEventListener('keyup', (e) => {
             keysDown.delete(e.key.toLowerCase());
+            if (e.key === ' ') {
+                spaceDown = false;
+                renderer.domElement.style.cursor = '';
+            }
+        });
+
+        // Spacebar + mouse drag to pan
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+
+        renderer.domElement.addEventListener('mousedown', (e) => {
+            if (spaceDown) {
+                isDragging = true;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+                renderer.domElement.style.cursor = 'grabbing';
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const dx = e.clientX - lastMouseX;
+                const dy = e.clientY - lastMouseY;
+                lastMouseX = e.clientX;
+                lastMouseY = e.clientY;
+
+                // Convert pixel delta to world units
+                const pixelsPerUnit = window.innerWidth / (frustumSize * (window.innerWidth / window.innerHeight));
+                const worldDx = -dx / pixelsPerUnit;
+                const worldDy = -dy / pixelsPerUnit;
+
+                // Map screen delta to world XZ using azimuth
+                const azRad = THREE.MathUtils.degToRad(180 - azimuthDeg);
+                const sinAz = Math.sin(azRad);
+                const cosAz = Math.cos(azRad);
+
+                // Screen right → world direction, screen up → world direction
+                panOffset.x += worldDx * cosAz;
+                panOffset.z += worldDx * -sinAz;
+                panOffset.x += worldDy * sinAz;
+                panOffset.z += worldDy * cosAz;
+
+                updateCameraPosition();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                renderer.domElement.style.cursor = spaceDown ? 'grab' : '';
+            }
         });
 
         // Zoom with mouse wheel
@@ -354,8 +428,8 @@
             const panSpeed = frustumSize * 0.008;
             // Pan directions relative to current azimuth
             const azRad = THREE.MathUtils.degToRad(azimuthDeg);
-            const forward = new THREE.Vector3(-Math.sin(azRad), 0, -Math.cos(azRad));
-            const right = new THREE.Vector3(Math.cos(azRad), 0, -Math.sin(azRad));
+            const forward = new THREE.Vector3(Math.sin(azRad), 0, -Math.cos(azRad));
+            const right = new THREE.Vector3(Math.cos(azRad), 0, Math.sin(azRad));
 
             if (keysDown.has('w') || keysDown.has('arrowup')) panOffset.addScaledVector(forward, panSpeed);
             if (keysDown.has('s') || keysDown.has('arrowdown')) panOffset.addScaledVector(forward, -panSpeed);
@@ -404,7 +478,7 @@
             const metersPerDegLng = 111320 * Math.cos(centerLatRad);
 
             const lat = CONFIG.CENTER_LAT + (localPos.z / metersPerDegLat);
-            const lng = CONFIG.CENTER_LNG + (localPos.x / metersPerDegLng);
+            const lng = CONFIG.CENTER_LNG - (localPos.x / metersPerDegLng);
             return { lat, lng };
         }
 
@@ -424,6 +498,9 @@
         }
 
         renderer.domElement.addEventListener('click', async (e) => {
+            // Don't fire address lookup during spacebar pan
+            if (spaceDown) return;
+
             // Normalized device coords
             const rect = renderer.domElement.getBoundingClientRect();
             const mouse = new THREE.Vector2(
