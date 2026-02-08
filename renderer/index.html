@@ -88,6 +88,60 @@
             filter: drop-shadow(0 0 4px rgba(0,0,0,0.5));
         }
 
+        #path-toolbar {
+            position: fixed;
+            bottom: 12px;
+            right: 12px;
+            display: flex;
+            gap: 6px;
+            z-index: 100;
+        }
+
+        #path-toolbar button {
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 11px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        #path-toolbar button:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        #path-toolbar button:disabled {
+            opacity: 0.3;
+            cursor: default;
+        }
+
+        #path-toolbar button.active {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        .waypoint-dot {
+            position: fixed;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: rgba(231, 76, 60, 0.8);
+            border: 2px solid white;
+            color: white;
+            font-family: monospace;
+            font-size: 9px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            z-index: 110;
+            text-shadow: 0 0 3px rgba(0,0,0,0.8);
+        }
+
         #click-info {
             position: fixed;
             display: none;
@@ -114,7 +168,7 @@
     </div>
 
     <div id="controls-help">
-        WASD / Arrows: Pan &nbsp;|&nbsp; Space+Drag: Pan &nbsp;|&nbsp; Scroll / [ ]: Zoom &nbsp;|&nbsp; Q/E: Rotate 45&deg; &nbsp;|&nbsp; Click: Address &nbsp;|&nbsp; P: Screenshot
+        Drag / WASD: Pan &nbsp;|&nbsp; Scroll / [ ]: Zoom &nbsp;|&nbsp; Q/E: Rotate 45&deg; &nbsp;|&nbsp; Click: Address &nbsp;|&nbsp; P: Screenshot
     </div>
 
     <div id="compass">
@@ -139,6 +193,13 @@
     </div>
 
     <div id="click-info"></div>
+    <div id="waypoint-container"></div>
+    <div id="path-toolbar">
+        <button id="path-draw">Draw</button>
+        <button id="path-play" disabled>Play</button>
+        <button id="path-stop" disabled>Stop</button>
+        <button id="path-erase" disabled>Erase</button>
+    </div>
     <div id="attribution"></div>
     <div id="loading">Loading 3D Tiles...</div>
     <div id="screenshot-flash"></div>
@@ -226,7 +287,7 @@
         // 2:1 dimetric isometric angle
         // Elevation from ground = arctan(1/2) ≈ 26.565°
         // In Three.js spherical: phi from +Y = arctan(2) ≈ 63.435°
-        let azimuthDeg = 45; // SW-facing
+        let azimuthDeg = 0; // North-up
         const cameraDistance = 2000;
 
         function updateCameraPosition() {
@@ -331,11 +392,11 @@
 
             // Rotate azimuth by 45° increments
             if (e.key.toLowerCase() === 'q') {
-                azimuthDeg = (azimuthDeg - 45) % 360;
+                azimuthDeg = (azimuthDeg - 15 + 360) % 360;
                 updateCameraPosition();
             }
             if (e.key.toLowerCase() === 'e') {
-                azimuthDeg = (azimuthDeg + 45) % 360;
+                azimuthDeg = (azimuthDeg + 15) % 360;
                 updateCameraPosition();
             }
 
@@ -365,25 +426,28 @@
             }
         });
 
-        // Spacebar + mouse drag to pan
+        // Mouse drag to pan
         let isDragging = false;
+        let dragMoved = false;
         let lastMouseX = 0;
         let lastMouseY = 0;
 
         renderer.domElement.addEventListener('mousedown', (e) => {
-            if (spaceDown) {
-                isDragging = true;
-                lastMouseX = e.clientX;
-                lastMouseY = e.clientY;
-                renderer.domElement.style.cursor = 'grabbing';
-                e.preventDefault();
-            }
+            if (pathMode === 'play') return;
+            isDragging = true;
+            dragMoved = false;
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
         });
 
         window.addEventListener('mousemove', (e) => {
             if (isDragging) {
                 const dx = e.clientX - lastMouseX;
                 const dy = e.clientY - lastMouseY;
+                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+                    dragMoved = true;
+                    renderer.domElement.style.cursor = 'grabbing';
+                }
                 lastMouseX = e.clientX;
                 lastMouseY = e.clientY;
 
@@ -410,7 +474,7 @@
         window.addEventListener('mouseup', () => {
             if (isDragging) {
                 isDragging = false;
-                renderer.domElement.style.cursor = spaceDown ? 'grab' : '';
+                renderer.domElement.style.cursor = '';
             }
         });
 
@@ -425,6 +489,7 @@
 
         // Pan with keys each frame
         function handlePan() {
+            if (pathMode === 'play') return;
             const panSpeed = frustumSize * 0.008;
             // Pan directions relative to current azimuth
             const azRad = THREE.MathUtils.degToRad(azimuthDeg);
@@ -498,8 +563,9 @@
         }
 
         renderer.domElement.addEventListener('click', async (e) => {
-            // Don't fire address lookup during spacebar pan
-            if (spaceDown) return;
+            // Don't fire during drag or playback
+            if (dragMoved) return;
+            if (pathMode === 'play') return;
 
             // Normalized device coords
             const rect = renderer.domElement.getBoundingClientRect();
@@ -509,24 +575,27 @@
             );
 
             raycaster.setFromCamera(mouse, camera);
-
-            // Raycast against all tile meshes
             const intersects = raycaster.intersectObjects(tiles.group.children, true);
 
             if (intersects.length > 0) {
                 const point = intersects[0].point;
+
+                // Draw mode: add waypoint
+                if (pathMode === 'draw') {
+                    addWaypoint(point.x, point.y, point.z);
+                    return;
+                }
+
+                // Normal mode: address lookup
                 const { lat, lng } = localToLatLng(point);
 
-                // Show coords immediately
                 clickInfoEl.style.display = 'block';
                 clickInfoEl.style.left = (e.clientX + 12) + 'px';
                 clickInfoEl.style.top = (e.clientY - 10) + 'px';
                 clickInfoEl.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)} — loading...`;
 
-                // Clear previous timeout
                 if (clickInfoTimeout) clearTimeout(clickInfoTimeout);
 
-                // Reverse geocode
                 const address = await reverseGeocode(lat, lng);
                 if (address) {
                     clickInfoEl.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}\n${address}`;
@@ -535,12 +604,129 @@
                     clickInfoEl.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
                 }
 
-                // Auto-hide after 5 seconds
                 clickInfoTimeout = setTimeout(() => {
                     clickInfoEl.style.display = 'none';
                 }, 5000);
             }
         });
+
+        // ============================================
+        // Animated Path Mode
+        // ============================================
+        let pathMode = null; // null | 'draw' | 'play'
+        const waypoints = [];
+        let pathCurve = null;
+        let pathStartTime = 0;
+        let pathDuration = 0;
+        const PATH_SECONDS_PER_SEGMENT = 4;
+
+        const waypointContainer = document.getElementById('waypoint-container');
+        const btnDraw = document.getElementById('path-draw');
+        const btnPlay = document.getElementById('path-play');
+        const btnStop = document.getElementById('path-stop');
+        const btnErase = document.getElementById('path-erase');
+
+        function updatePathButtons() {
+            const hasPoints = waypoints.length >= 2;
+            const isPlaying = pathMode === 'play';
+            const isDrawing = pathMode === 'draw';
+
+            btnDraw.disabled = isPlaying;
+            btnDraw.classList.toggle('active', isDrawing);
+            btnPlay.disabled = !hasPoints || isPlaying;
+            btnStop.disabled = !isPlaying;
+            btnErase.disabled = waypoints.length === 0 || isPlaying;
+        }
+
+        function enterDrawMode() {
+            pathMode = 'draw';
+            updatePathButtons();
+        }
+
+        function exitDrawMode() {
+            pathMode = null;
+            updatePathButtons();
+        }
+
+        function addWaypoint(worldX, worldY, worldZ) {
+            waypoints.push({ x: worldX, y: worldY, z: worldZ });
+
+            // Create dot overlay
+            const dot = document.createElement('div');
+            dot.className = 'waypoint-dot';
+            dot.textContent = waypoints.length;
+            dot.dataset.index = waypoints.length - 1;
+            waypointContainer.appendChild(dot);
+
+            updatePathButtons();
+        }
+
+        function updateWaypointOverlays() {
+            if (waypoints.length === 0) return;
+            const dots = waypointContainer.children;
+            for (let i = 0; i < dots.length; i++) {
+                const wp = waypoints[i];
+                if (!wp) continue;
+                const vec = new THREE.Vector3(wp.x, wp.y, wp.z);
+                vec.project(camera);
+                const screenX = (vec.x * 0.5 + 0.5) * window.innerWidth;
+                const screenY = (-vec.y * 0.5 + 0.5) * window.innerHeight;
+                dots[i].style.left = screenX + 'px';
+                dots[i].style.top = screenY + 'px';
+            }
+        }
+
+        function startPlayback() {
+            if (waypoints.length < 2) return;
+
+            const points = waypoints.map(wp => new THREE.Vector3(wp.x, 0, wp.z));
+            pathCurve = new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
+            pathDuration = (waypoints.length - 1) * PATH_SECONDS_PER_SEGMENT * 1000;
+            pathStartTime = performance.now();
+            pathMode = 'play';
+            updatePathButtons();
+        }
+
+        function updatePathAnimation() {
+            if (pathMode !== 'play' || !pathCurve) return;
+
+            const elapsed = performance.now() - pathStartTime;
+            const t = Math.min(elapsed / pathDuration, 1);
+
+            const pos = pathCurve.getPoint(t);
+            panOffset.x = pos.x;
+            panOffset.z = pos.z;
+            updateCameraPosition();
+
+            if (t >= 1) {
+                pathMode = 'draw';
+                updatePathButtons();
+            }
+        }
+
+        function stopPlayback() {
+            pathMode = 'draw';
+            updatePathButtons();
+        }
+
+        function eraseWaypoints() {
+            waypoints.length = 0;
+            waypointContainer.innerHTML = '';
+            pathCurve = null;
+            pathMode = null;
+            updatePathButtons();
+        }
+
+        btnDraw.addEventListener('click', () => {
+            if (pathMode === 'draw') {
+                exitDrawMode();
+            } else {
+                enterDrawMode();
+            }
+        });
+        btnPlay.addEventListener('click', startPlayback);
+        btnStop.addEventListener('click', stopPlayback);
+        btnErase.addEventListener('click', eraseWaypoints);
 
         // ============================================
         // UI Updates
@@ -595,6 +781,7 @@
             requestAnimationFrame(animate);
 
             handlePan();
+            updatePathAnimation();
             updateCameraPosition();
 
             camera.updateMatrixWorld();
@@ -602,6 +789,7 @@
 
             renderer.render(scene, camera);
             updateUI();
+            updateWaypointOverlays();
         }
 
         animate();
